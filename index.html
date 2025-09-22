@@ -1,1 +1,230 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>순차 동영상 재생기</title>
+  <style>
+    :root{
+      --bg:#0b1220; --card:#0f172a; --muted:#94a3b8; --accent:#38bdf8; --text:#e5e7eb;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{margin:0;background:linear-gradient(180deg,#0b1220,#0a0f1a);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,"Noto Sans KR",Apple Color Emoji,Segoe UI Emoji}
+    .wrap{max-width:1100px;margin:0 auto;padding:20px;display:flex;flex-direction:column;gap:14px}
+    .bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+    .bar h1{font-size:18px;margin:0;color:#fff;opacity:.95}
+    button{appearance:none;border:0;background:var(--accent);color:#002033;padding:10px 14px;border-radius:12px;font-weight:700;cursor:pointer}
+    button.secondary{background:#1f2937;color:var(--text);border:1px solid #334155}
+    button.ghost{background:transparent;color:var(--text);border:1px solid #334155}
+    button:disabled{opacity:.5;cursor:not-allowed}
+    .stage{background:var(--card);border:1px solid #1f2937;border-radius:16px;overflow:hidden;min-height:55vh;display:grid}
+    .stage > *{width:100%;height:100%;border:0}
+    .meta{display:flex;align-items:center;gap:10px;flex-wrap:wrap;opacity:.9}
+    .tag{font-size:12px;padding:4px 8px;border:1px solid #334155;border-radius:999px}
+    .list{display:flex;gap:8px;flex-wrap:wrap}
+    .chip{padding:6px 10px;border-radius:999px;border:1px solid #334155;background:#0b1220;cursor:pointer}
+    .chip.active{background:var(--accent);color:#001724;border-color:transparent}
+    .grow{flex:1}
+    .row{display:flex;gap:8px;flex-wrap:wrap}
+    .help{font-size:12px;color:var(--muted)}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="bar">
+      <h1>순차 동영상 재생기</h1>
+      <div class="grow"></div>
+      <button id="prevBtn" class="secondary" title="이전 (←)">◀ 이전</button>
+      <button id="nextBtn" title="다음 (Space / N / →)">다음 ▶</button>
+      <button id="fsBtn" class="ghost" title="전체화면 전환">⤢ 전체화면</button>
+    </div>
 
+    <div id="stage" class="stage" tabindex="-1" aria-label="재생 영역">
+      <!-- 동적으로 video 또는 iframe을 넣음 -->
+    </div>
+
+    <div class="meta">
+      <span id="idxText" class="tag">1 / 2</span>
+      <span id="sourceText" class="help"></span>
+      <div class="grow"></div>
+      <a id="openNew" class="help" href="#" target="_blank" rel="noopener">🔗 새 탭으로 열기</a>
+    </div>
+
+    <div class="row help">
+      <div>키보드: <b>Space</b> 또는 <b>N</b> 또는 <b>→</b> 다음 / <b>←</b> 이전</div>
+      <div>일부 제공처(특히 OneDrive)는 보안정책으로 iframe 차단될 수 있습니다. 그 경우 위의 "새 탭으로 열기"를 사용하세요.</div>
+    </div>
+
+    <details>
+      <summary>➕ 링크 추가/수정 (고급)</summary>
+      <div class="help" style="margin:8px 0 12px">각 줄에 하나씩 붙여넣으면 자동으로 유형을 감지합니다. (Google Drive는 자동으로 <code>/preview</code> 변환)</div>
+      <textarea id="bulk" style="width:100%;height:120px;background:#0b1220;color:var(--text);border:1px solid #334155;border-radius:12px;padding:10px"></textarea>
+      <div style="margin-top:8px;display:flex;gap:8px">
+        <button id="applyBtn" class="secondary">적용</button>
+        <button id="resetBtn" class="ghost">기본 두 링크로 되돌리기</button>
+      </div>
+      <div class="list" id="chips"></div>
+    </details>
+  </div>
+
+  <script>
+    // 1) 초기 링크 (사용자 제공)
+    const initialUrls = [
+      // OneDrive 공유 링크 (짧은 1drv.ms)
+      "https://1drv.ms/v/c/1cbd00c8b31c7409/EawLTlOopkFNhXmU_88nuV0B8Xw3wcNAFiALMZToz2tpEg?e=9Zcdtz",
+      // Google Drive open?id=... 링크
+      "https://drive.google.com/open?id=1gWDSK_GmuYOZrsp3wyL0rR1Z0at-ygtP&usp=drive_copy",
+    ];
+
+    // 2) URL을 공급자별 재생 가능한 형태로 변환
+    function normalizeUrl(u){
+      const url = String(u).trim();
+      if(!url) return null;
+
+      // Google Drive: 다양한 형태 지원 -> /file/d/{id}/preview 로 변환 (iframe용)
+      if(url.includes("drive.google.com")){
+        // open?id=... 형태
+        let idMatch = url.match(/[?&]id=([\w-]+)/);
+        if(!idMatch){
+          // /file/d/{id}/ 형태
+          idMatch = url.match(/\/file\/d\/([\w-]+)/);
+        }
+        if(idMatch){
+          const id = idMatch[1];
+          return { kind: "iframe", src: `https://drive.google.com/file/d/${id}/preview`, title: `Google Drive (${id})` };
+        }
+        // 식별 실패 시 원본으로 iframe 시도
+        return { kind: "iframe", src: url, title: "Google Drive (원본)" };
+      }
+
+      // OneDrive / 1drv.ms: 보통 자체 뷰어 페이지가 있어 iframe으로 시도
+      if(url.includes("1drv.ms") || url.includes("onedrive.live.com")){
+        // 가능하면 그대로 iframe에 로드 (일부는 X-Frame-Options로 차단될 수 있음)
+        return { kind: "iframe", src: url, title: "OneDrive" };
+      }
+
+      // 일반 MP4 등 직접 재생 시도
+      if(/\.(mp4|webm|ogg)(\?|#|$)/i.test(url)){
+        return { kind: "video", src: url, title: "직접 재생" };
+      }
+
+      // 알 수 없는 경우 iframe으로 시도
+      return { kind: "iframe", src: url, title: "링크" };
+    }
+
+    // 3) 재생 목록 구성
+    let playlist = initialUrls.map(normalizeUrl).filter(Boolean);
+
+    // 4) UI 요소
+    const stage = document.getElementById('stage');
+    const idxText = document.getElementById('idxText');
+    const sourceText = document.getElementById('sourceText');
+    const openNew = document.getElementById('openNew');
+    const prevBtn = document.getElementById('prevBtn');
+    const nextBtn = document.getElementById('nextBtn');
+    const fsBtn = document.getElementById('fsBtn');
+    const chips = document.getElementById('chips');
+    const bulk = document.getElementById('bulk');
+
+    let current = 0;
+
+    function renderChips(){
+      chips.innerHTML = '';
+      playlist.forEach((item, i)=>{
+        const el = document.createElement('button');
+        el.className = 'chip' + (i===current?' active':'');
+        el.textContent = `${i+1}. ${item.title || item.src}`;
+        el.title = item.src;
+        el.onclick = ()=>{ go(i); };
+        chips.appendChild(el);
+      });
+    }
+
+    function setStage(node){
+      stage.innerHTML = '';
+      stage.appendChild(node);
+    }
+
+    function go(i){
+      if(i<0 || i>=playlist.length) return;
+      current = i;
+      const item = playlist[i];
+
+      let node;
+      if(item.kind === 'video'){
+        node = document.createElement('video');
+        node.controls = true;
+        node.playsInline = true;
+        node.autoplay = true; // 다음 클릭 시 바로 재생
+        node.src = item.src;
+        node.style.background = '#000';
+      }else{
+        node = document.createElement('iframe');
+        node.allow = 'autoplay; encrypted-media; fullscreen; picture-in-picture';
+        node.referrerPolicy = 'no-referrer-when-downgrade';
+        node.src = item.src;
+      }
+
+      setStage(node);
+      idxText.textContent = `${i+1} / ${playlist.length}`;
+      sourceText.textContent = item.src;
+      openNew.href = item.src;
+      renderChips();
+      // 접근성 포커스 이동
+      stage.focus({preventScroll:true});
+    }
+
+    function next(){
+      const n = current + 1;
+      if(n < playlist.length) go(n);
+    }
+    function prev(){
+      const p = current - 1;
+      if(p >= 0) go(p);
+    }
+
+    // 전체화면 토글
+    fsBtn.addEventListener('click', ()=>{
+      const el = stage;
+      if(!document.fullscreenElement){
+        el.requestFullscreen?.();
+      }else{
+        document.exitFullscreen?.();
+      }
+    });
+
+    // 버튼 바인딩
+    nextBtn.onclick = next;
+    prevBtn.onclick = prev;
+
+    // 키보드 단축키
+    window.addEventListener('keydown', (e)=>{
+      if(e.target.tagName === 'TEXTAREA') return; // 입력 중 예외
+      if(e.code === 'Space' || e.key.toLowerCase() === 'n' || e.key === 'ArrowRight'){
+        e.preventDefault(); next();
+      }else if(e.key === 'ArrowLeft'){
+        e.preventDefault(); prev();
+      }
+    });
+
+    // 대량 입력 적용/초기화
+    document.getElementById('applyBtn').onclick = ()=>{
+      const lines = bulk.value.split(/\n+/).map(s=>s.trim()).filter(Boolean);
+      if(lines.length){
+        playlist = lines.map(normalizeUrl).filter(Boolean);
+        current = 0; go(0);
+      }
+    };
+    document.getElementById('resetBtn').onclick = ()=>{
+      playlist = initialUrls.map(normalizeUrl).filter(Boolean);
+      bulk.value = initialUrls.join('\n');
+      current = 0; go(0);
+    };
+
+    // 초기 상태
+    bulk.value = initialUrls.join('\n');
+    go(0);
+  </script>
+</body>
+</html>
